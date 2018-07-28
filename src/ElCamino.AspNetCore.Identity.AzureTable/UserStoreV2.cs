@@ -16,6 +16,34 @@ using ElCamino.AspNetCore.Identity.AzureTable.Model;
 
 namespace ElCamino.AspNetCore.Identity.AzureTable
 {
+    public static class EnumerableExtensions
+    {
+        /// <summary>
+        /// Performs the specified action on each element of the <see cref="IEnumerable{T}"/>
+        /// </summary>
+        /// <typeparam name="T">Type of item in the enumerable</typeparam>
+        /// <param name="enumerable">
+        /// The enumerable for which to perform an action on each element
+        /// </param>
+        /// <param name="action">
+        /// The <see cref="Action{T}"/> delegate to perform on each element of the
+        /// <see cref="IEnumerable{T}"/>
+        /// </param>
+        public static void ForEach<T>(this IEnumerable<T> enumerable, Action<T> action)
+        {
+            if (enumerable is IList<T> list)
+            {
+                list.ForEach(action);
+                return;
+            }
+
+            foreach (var item in enumerable)
+            {
+                action(item);
+            }
+        }
+    }
+
     /// <summary>
     /// Supports IdentityUser with Roles, Claims, and Tokens as collection properties.
     /// Use this for backwards compat existing code. Otherwise, data is the same.
@@ -92,10 +120,10 @@ namespace ElCamino.AspNetCore.Identity.AzureTable
                 if(result.User != null)
                 {
                     TUser u = result.User;
-                    result.Claims.ToList().ForEach(c => u.Claims.Add(c));
-                    result.Logins.ToList().ForEach(l => u.Logins.Add(l));
-                    result.Roles.ToList().ForEach(r => u.Roles.Add(r));
-                    result.Tokens.ToList().ForEach(t => u.Tokens.Add(t));
+                    result.Claims.ForEach(c => u.Claims.Add(c));
+                    result.Logins.ForEach(l => u.Logins.Add(l));
+                    result.Roles.ForEach(r => u.Roles.Add(r));
+                    result.Tokens.ForEach(t => u.Tokens.Add(t));
                     return u;
                 }
             }
@@ -109,10 +137,10 @@ namespace ElCamino.AspNetCore.Identity.AzureTable
             if (result.User != null)
             {
                 TUser u = result.User;
-                result.Claims.ToList().ForEach(c => u.Claims.Add(c));
-                result.Logins.ToList().ForEach(l => u.Logins.Add(l));
-                result.Roles.ToList().ForEach(r => u.Roles.Add(r));
-                result.Tokens.ToList().ForEach(t => u.Tokens.Add(t));
+                result.Claims.ForEach(c => u.Claims.Add(c));
+                result.Logins.ForEach(l => u.Logins.Add(l));
+                result.Roles.ForEach(r => u.Roles.Add(r));
+                result.Tokens.ForEach(t => u.Tokens.Add(t));
                 return u;
             }
 
@@ -146,7 +174,7 @@ namespace ElCamino.AspNetCore.Identity.AzureTable
                 for (int i = 0; i < tempUserIds.Count; i++)
                 {
 
-                    string temp = TableQuery.GenerateFilterCondition("PartitionKey", QueryComparisons.Equal, tempUserIds[i]);
+                    string temp = TableQuery.GenerateFilterCondition(nameof(TableEntity.PartitionKey), QueryComparisons.Equal, tempUserIds[i]);
 
                     if (i > 0)
                     {
@@ -166,22 +194,13 @@ namespace ElCamino.AspNetCore.Identity.AzureTable
 #if DEBUG
             DateTime startUserAggTotal = DateTime.UtcNow;
 #endif
-            List<Task> tasks = new List<Task>(listTqs.Count);
-            listTqs.ForEach((q) =>
-            {
-                tasks.Add(Task.Run(async () =>
+            await Task.WhenAll(
+                listTqs.Select(async q =>
                 {
-                    (await _userTable.ExecuteQueryAsync(q))
-                    .ToList()
-                    .GroupBy(g => g.PartitionKey)
-                    .ToList()
-                    .ForEach((s) =>
-                    {
-                        bag.Add(MapUser(s.Key, s));
-                    });
-                }));
-            });
-            await Task.WhenAll(tasks);
+                    (await _userTable.ExecuteQueryAsync(q).ConfigureAwait(false))
+                                     .GroupBy(g => g.PartitionKey)
+                                     .ForEach(s => bag.Add(MapUser(s.Key, s)));
+                })).ConfigureAwait(false);
 #if DEBUG
             Debug.WriteLine("GetUserAggregateQuery (GetUserAggregateTotal): {0} seconds", (DateTime.UtcNow - startUserAggTotal).TotalSeconds);
 #endif
@@ -347,7 +366,7 @@ namespace ElCamino.AspNetCore.Identity.AzureTable
                     tasks.Add(_indexTable.ExecuteAsync(TableOperation.InsertOrReplace(index)));
                 }
 
-                await Task.WhenAll(tasks.ToArray());
+                await Task.WhenAll(tasks);
                 return IdentityResult.Success;
             }
             catch (AggregateException aggex)
@@ -395,7 +414,7 @@ namespace ElCamino.AspNetCore.Identity.AzureTable
 
             try
             {
-                await Task.WhenAll(tasks.ToArray());
+                await Task.WhenAll(tasks);
                 return IdentityResult.Success;
             }
             catch (AggregateException aggex)
@@ -439,12 +458,17 @@ namespace ElCamino.AspNetCore.Identity.AzureTable
         {
             string rowKey = KeyHelper.GenerateRowKeyIdentityUserLogin(loginProvider, providerKey);
 
+            // Consider retrieve instead of query
+            //var tableResult = await _userTable.ExecuteAsync(TableOperation.Retrieve(userId, rowKey));
+            //(TUserLogin)tableResult.Result;
+
             TableQuery tq = new TableQuery();
             tq.TakeCount = 1;
             tq.FilterString = TableQuery.CombineFilters(
-                TableQuery.GenerateFilterCondition("PartitionKey", QueryComparisons.Equal, userId),
+                TableQuery.GenerateFilterCondition(nameof(TableEntity.PartitionKey), QueryComparisons.Equal, userId),
                 TableOperators.And,
-                TableQuery.GenerateFilterCondition("RowKey", QueryComparisons.Equal, rowKey));
+                TableQuery.GenerateFilterCondition(nameof(TableEntity.RowKey), QueryComparisons.Equal, rowKey));
+
 
             var result = await _userTable.ExecuteQueryAsync(tq);
             var log = result.FirstOrDefault();
@@ -808,44 +832,35 @@ namespace ElCamino.AspNetCore.Identity.AzureTable
 #if DEBUG
             DateTime startUserAggTotal = DateTime.UtcNow;
 #endif
-            List<Task> tasks = new List<Task>(listTqs.Count);
-            listTqs.ForEach((q) =>
+            var tasks = listTqs.Select(async q =>
             {
-                tasks.Add(
-                     _userTable.ExecuteQueryAsync(q)
-                     .ContinueWith((taskResults) =>
-                     {
-                         //ContinueWith returns completed task. Calling .Result is safe here.
-                         var r = taskResults.Result;
-                         r.ToList()
-                         .GroupBy(g => g.PartitionKey)
-                         .ToList().ForEach((s) =>
-                         {
-                             var userAgg = MapUserAggregate(s.Key, s);
-                             bool addUser = true;
-                             if (whereClaim != null)
-                             {
-                                 if (!userAgg.Claims.Any(whereClaim))
+                (await _userTable.ExecuteQueryAsync(q).ConfigureAwait(false))
+                                 .GroupBy(g => g.PartitionKey)
+                                 .Select(s =>
                                  {
-                                     addUser = false;
-                                 }
-                             }
-                             if (whereRole != null)
-                             {
-                                 if (!userAgg.Roles.Any(whereRole))
-                                 {
-                                     addUser = false;
-                                 }
-                             }
-                             if (addUser)
-                             {
-                                 bag.Add(userAgg.User);
-                             }
-                         });
-                     }, TaskContinuationOptions.ExecuteSynchronously)                   
-                    );
+                                     var userAgg = MapUserAggregate(s.Key, s);
+                                     bool addUser = true;
+                                     if (whereClaim != null)
+                                     {
+                                         if (!userAgg.Claims.Any(whereClaim))
+                                         {
+                                             addUser = false;
+                                         }
+                                     }
+                                     if (whereRole != null)
+                                     {
+                                         if (!userAgg.Roles.Any(whereRole))
+                                         {
+                                             addUser = false;
+                                         }
+                                     }
+                                     if (addUser)
+                                     {
+                                         bag.Add(userAgg.User);
+                                     }
+                                 });
             });
-            await Task.WhenAll(tasks);
+            await Task.WhenAll(tasks).ConfigureAwait(false);
 #if DEBUG
             Debug.WriteLine("GetUserAggregateQuery (GetUserAggregateTotal): {0} seconds", (DateTime.UtcNow - startUserAggTotal).TotalSeconds);
             Debug.WriteLine("GetUserAggregateQuery (Return Count): {0} userIds", bag.Count());
